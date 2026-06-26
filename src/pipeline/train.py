@@ -161,6 +161,27 @@ def run_pipeline(config_path: str):
             json.dump(metadata, f, indent=2)
 
         mlflow.log_artifacts(str(artifact_dir), artifact_path="models")
+
+        registered_model_name = "anomaly-detector"
+        try:
+            mlflow.register_model(
+                f"runs:/{run.info.run_id}/models",
+                registered_model_name,
+            )
+            client = mlflow.tracking.MlflowClient()
+            latest_version = client.get_latest_versions(registered_model_name, stages=["None"])[-1]
+            client.transition_model_version_stage(
+                name=registered_model_name,
+                version=latest_version.version,
+                stage="Staging",
+            )
+            print(
+                f"Registered '{registered_model_name}'"
+                f" v{latest_version.version} to Staging"
+            )
+        except Exception as e:
+            print(f"Model registration skipped: {e}")
+
         print("Pipeline complete. Run ID:", run.info.run_id)
 
 
