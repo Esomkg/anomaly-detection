@@ -42,4 +42,22 @@ def validate_metrics(df: pd.DataFrame) -> dict:
         if neg_errors > 0:
             errors.append(f"error_rate: {neg_errors} negative values")
 
-    return {"valid": len(errors) == 0, "errors": errors, "warnings": warnings}
+    if "is_anomaly" in df.columns:
+        anomaly_pct = df["is_anomaly"].mean() * 100
+        if anomaly_pct == 0:
+            warnings.append("no anomalies detected in data")
+        elif anomaly_pct > 20:
+            warnings.append(f"high anomaly rate: {anomaly_pct:.1f}%")
+
+    if "disk_io" in df.columns:
+        neg_io = (df["disk_io"] < 0).sum()
+        if neg_io > 0:
+            errors.append(f"disk_io: {neg_io} negative values")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "n_rows": len(df),
+        "n_columns": len(df.columns),
+    }
