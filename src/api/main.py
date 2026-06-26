@@ -7,6 +7,7 @@ import pandas as pd
 import yaml
 from fastapi import FastAPI, Response
 
+from src.alerts.notifier import CompositeNotifier
 from src.api.schemas import (
     BatchMetricsInput,
     BatchPredictionOutput,
@@ -23,6 +24,7 @@ from src.metrics.collector import (
     predict_non_anomalies,
     predict_requests,
 )
+from src.metrics.drift import DriftDetector
 from src.models.autoencoder import LSTMAutoencoder, compute_anomaly_scores
 from src.models.ensemble import EnsembleDetector
 from src.models.isolation import IsolationForestModel
@@ -32,10 +34,12 @@ AUTOENCODER = None
 ISOLATION_FOREST = None
 ENSEMBLE = None
 METADATA = None
+NOTIFIER = None
+DRIFT_DETECTOR = None
 
 
 def load_models(config_path: str = "configs/config.yaml"):
-    global AUTOENCODER, ISOLATION_FOREST, ENSEMBLE, MODEL_CONFIG, METADATA
+    global AUTOENCODER, ISOLATION_FOREST, ENSEMBLE, MODEL_CONFIG, METADATA, NOTIFIER, DRIFT_DETECTOR
 
     with open(config_path) as f:
         MODEL_CONFIG = yaml.safe_load(f)
@@ -59,6 +63,9 @@ def load_models(config_path: str = "configs/config.yaml"):
 
     ENSEMBLE = EnsembleDetector(MODEL_CONFIG)
     ENSEMBLE.threshold = METADATA["ensemble_threshold"]
+
+    NOTIFIER = CompositeNotifier(MODEL_CONFIG)
+    DRIFT_DETECTOR = DriftDetector(window_size=500, threshold=0.3)
 
 
 @asynccontextmanager
@@ -86,6 +93,10 @@ def _predict_single(data: dict) -> tuple[bool, float]:
     )
     scores_if = ISOLATION_FOREST.predict(X)
     predictions, combined = ENSEMBLE.predict(scores_ae, scores_if)
+
+    if DRIFT_DETECTOR:
+        DRIFT_DETECTOR.update(data)
+
     return bool(predictions[-1]), float(combined[-1])
 
 
@@ -107,6 +118,12 @@ def predict(input_data: MetricsInput):
     predict_latency.labels(endpoint="/predict").observe(elapsed)
     if is_anomaly:
         predict_anomalies.labels(endpoint="/predict").inc()
+        if NOTIFIER:
+            NOTIFIER.process_prediction(
+                {"timestamp": str(pd.Timestamp.now()), "metrics": input_data.model_dump()},
+                True,
+                score,
+            )
     else:
         predict_non_anomalies.labels(endpoint="/predict").inc()
 
@@ -134,6 +151,12 @@ def predict_batch(input_data: BatchMetricsInput):
         )
         if is_anomaly:
             anomaly_count += 1
+            if NOTIFIER:
+                NOTIFIER.process_prediction(
+                    {"timestamp": str(pd.Timestamp.now()), "metrics": instance.model_dump()},
+                    True,
+                    score,
+                )
 
     elapsed = time.perf_counter() - t_start
     n = len(input_data.instances)
@@ -149,3 +172,26 @@ def predict_batch(input_data: BatchMetricsInput):
 @app.get("/metrics")
 def metrics():
     return Response(content=metrics_response(), media_type="text/plain")
+
+
+@app.get("/drift")
+def get_drift():
+    if DRIFT_DETECTOR is None:
+        return {"drift_detected": False, "error": "not initialized"}
+    result = DRIFT_DETECTOR.update({})
+    return result
+
+
+@app.get("/alerts")
+def get_alerts(limit: int = 100):
+    if NOTIFIER is None:
+        return {"alerts": [], "total": 0}
+    history = NOTIFIER.alert_history[-limit:]
+    return {"alerts": history, "total": len(NOTIFIER.alert_history)}
+
+
+@app.get("/alerts/summary")
+def get_alerts_summary():
+    if NOTIFIER is None:
+        return {"total_alerts": 0}
+    return NOTIFIER.get_summary()
