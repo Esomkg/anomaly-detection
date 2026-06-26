@@ -25,11 +25,16 @@ data/processed/*
 # ML
 mlruns/
 mlartifacts/
-.dvc/
 models/
 !models/.gitkeep
 mlflow.db
 condaenv.*.requirements.txt
+
+# DVC
+.dvc/cache
+.dvc/tmp
+.dvc/lock
+.dvc_store/
 
 # Notebooks
 .ipynb_checkpoints/
