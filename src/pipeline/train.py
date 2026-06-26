@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 import mlflow
+import numpy as np
 import pytorch_lightning as pl
 import yaml
 from torch.utils.data import DataLoader
@@ -59,17 +60,33 @@ def run_pipeline(config_path: str):
 
         print(f"Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
 
-        print("Training autoencoder...")
         ae_config = config["model"]["autoencoder"]
         seq_length = ae_config["sequence_length"]
-        train_dataset = SequenceDataset(X_train, seq_length)
+
+        print("Training isolation forest (pre-filter for clean training)...")
+        if_model = IsolationForestModel(config)
+        if_model.fit(X_train)
+        scores_if_train_full = if_model.predict(X_train)
+
+        normal_mask = scores_if_train_full < np.percentile(
+            scores_if_train_full,
+            (1 - config["data"]["anomaly_rate"]) * 100,
+        )
+        X_train_clean = X_train[normal_mask]
+        print(
+            f"Using {len(X_train_clean)}/{len(X_train)} clean points for AE training"
+            f" ({len(X_train_clean) / len(X_train) * 100:.1f}%)"
+        )
+
+        print("Training autoencoder on clean data...")
+        train_dataset = SequenceDataset(X_train_clean, seq_length)
         val_dataset = SequenceDataset(X_val, seq_length)
 
         train_loader = DataLoader(train_dataset, batch_size=ae_config["batch_size"], shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=ae_config["batch_size"], shuffle=False)
 
         model = LSTMAutoencoder(
-            input_size=X_train.shape[1],
+            input_size=X_train_clean.shape[1],
             hidden_size=ae_config["hidden_size"],
             num_layers=ae_config["num_layers"],
             learning_rate=ae_config["learning_rate"],
@@ -90,15 +107,14 @@ def run_pipeline(config_path: str):
 
         print("Computing autoencoder scores...")
         scores_ae_train = compute_anomaly_scores(model, X_train, seq_length)
+        scores_ae_val = compute_anomaly_scores(model, X_val, seq_length)
         scores_ae_test = compute_anomaly_scores(model, X_test, seq_length)
 
-        print("Training isolation forest...")
-        if_model = IsolationForestModel(config)
-        if_model.fit(X_train)
         scores_if_train = if_model.predict(X_train)
+        scores_if_val = if_model.predict(X_val)
         scores_if_test = if_model.predict(X_test)
 
-        print("Fitting ensemble...")
+        print("Fitting ensemble threshold...")
         ensemble = EnsembleDetector(config)
         ensemble.fit_threshold(scores_ae_train, scores_if_train)
         mlflow.log_metric("ensemble_threshold", ensemble.threshold)

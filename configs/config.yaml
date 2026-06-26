@@ -31,7 +31,7 @@ model:
   ensemble:
     autoencoder_weight: 0.6
     isolation_weight: 0.4
-    threshold_percentile: 95
+    threshold_percentile: 92
 
 api:
   host: "0.0.0.0"
