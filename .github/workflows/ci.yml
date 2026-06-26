@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          environment-file: conda.yaml
+          activate-environment: anomaly-detection
+          python-version: "3.11"
+          auto-activate-base: false
+
+      - name: Lint with ruff
+        shell: bash -el {0}
+        run: ruff check src/ tests/
+
+      - name: Format check with black
+        shell: bash -el {0}
+        run: black --check src/ tests/
+
+      - name: Run tests
+        shell: bash -el {0}
+        run: pytest tests/ -v --cov=src --cov-report=term-missing
