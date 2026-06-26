@@ -1,14 +1,11 @@
-import json
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 class TestMetricsProducer:
     def test_generates_data_from_config(self):
         from src.streaming.producer import MetricsProducer
 
-        with patch("src.streaming.producer.KafkaProducer") as mock_kp:
+        with patch("src.streaming.producer.KafkaProducer"):
             producer = MetricsProducer("configs/streaming.yaml")
             assert producer.topic == "metrics"
             assert len(producer.data) > 0
@@ -36,7 +33,7 @@ class TestMetricsProducer:
     def test_send_next_returns_false_at_end(self):
         from src.streaming.producer import MetricsProducer
 
-        with patch("src.streaming.producer.KafkaProducer") as mock_kp:
+        with patch("src.streaming.producer.KafkaProducer"):
             producer = MetricsProducer("configs/streaming.yaml")
             producer.idx = len(producer.data)
             result = producer.send_next(delay=0)

@@ -1,10 +1,11 @@
 import json
+import time
 from contextlib import asynccontextmanager
 
 import joblib
 import pandas as pd
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from src.api.schemas import (
     BatchMetricsInput,
@@ -14,6 +15,14 @@ from src.api.schemas import (
     PredictionOutput,
 )
 from src.features.builder import build_features
+from src.metrics.collector import (
+    metrics_response,
+    model_loaded,
+    predict_anomalies,
+    predict_latency,
+    predict_non_anomalies,
+    predict_requests,
+)
 from src.models.autoencoder import LSTMAutoencoder, compute_anomaly_scores
 from src.models.ensemble import EnsembleDetector
 from src.models.isolation import IsolationForestModel
@@ -55,6 +64,8 @@ def load_models(config_path: str = "configs/config.yaml"):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_models()
+    is_loaded = all([AUTOENCODER is not None, ISOLATION_FOREST is not None])
+    model_loaded.set(1 if is_loaded else 0)
     yield
 
 
@@ -88,7 +99,17 @@ def health():
 
 @app.post("/predict", response_model=PredictionOutput)
 def predict(input_data: MetricsInput):
+    t_start = time.perf_counter()
     is_anomaly, score = _predict_single(input_data.model_dump())
+    elapsed = time.perf_counter() - t_start
+
+    predict_requests.labels(endpoint="/predict").inc()
+    predict_latency.labels(endpoint="/predict").observe(elapsed)
+    if is_anomaly:
+        predict_anomalies.labels(endpoint="/predict").inc()
+    else:
+        predict_non_anomalies.labels(endpoint="/predict").inc()
+
     return PredictionOutput(
         is_anomaly=is_anomaly,
         anomaly_score=round(score, 4),
@@ -98,7 +119,10 @@ def predict(input_data: MetricsInput):
 
 @app.post("/predict_batch", response_model=BatchPredictionOutput)
 def predict_batch(input_data: BatchMetricsInput):
+    t_start = time.perf_counter()
     results = []
+    anomaly_count = 0
+
     for instance in input_data.instances:
         is_anomaly, score = _predict_single(instance.model_dump())
         results.append(
@@ -108,4 +132,20 @@ def predict_batch(input_data: BatchMetricsInput):
                 threshold=round(ENSEMBLE.threshold, 4),
             )
         )
+        if is_anomaly:
+            anomaly_count += 1
+
+    elapsed = time.perf_counter() - t_start
+    n = len(input_data.instances)
+
+    predict_requests.labels(endpoint="/predict_batch").inc()
+    predict_latency.labels(endpoint="/predict_batch").observe(elapsed)
+    predict_anomalies.labels(endpoint="/predict_batch").inc(anomaly_count)
+    predict_non_anomalies.labels(endpoint="/predict_batch").inc(n - anomaly_count)
+
     return BatchPredictionOutput(predictions=results)
+
+
+@app.get("/metrics")
+def metrics():
+    return Response(content=metrics_response(), media_type="text/plain")
