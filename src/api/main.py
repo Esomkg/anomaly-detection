@@ -78,15 +78,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Anomaly Detection API", version="0.1.0", lifespan=lifespan)
 
+REQUEST_BUFFER: list[dict] = []
+MIN_BUFFER_SIZE = 48
+
 
 def _predict_single(data: dict) -> tuple[bool, float]:
-    df = pd.DataFrame([{**data, "timestamp": pd.Timestamp.now()}])
+    global REQUEST_BUFFER
+
+    REQUEST_BUFFER.append({**data, "timestamp": pd.Timestamp.now()})
+    if len(REQUEST_BUFFER) > 576:
+        REQUEST_BUFFER = REQUEST_BUFFER[-576:]
+
+    df = pd.DataFrame(REQUEST_BUFFER)
     feature_df = build_features(df, MODEL_CONFIG, dropna=False)
+
     feature_cols = METADATA["feature_cols"]
     for col in feature_cols:
         if col not in feature_df.columns:
             feature_df[col] = 0.0
     X = feature_df[feature_cols].values
+    latest_idx = len(X) - 1
 
     scores_ae = compute_anomaly_scores(
         AUTOENCODER, X, MODEL_CONFIG["model"]["autoencoder"]["sequence_length"]
@@ -97,6 +108,8 @@ def _predict_single(data: dict) -> tuple[bool, float]:
     if DRIFT_DETECTOR:
         DRIFT_DETECTOR.update(data)
 
+    if latest_idx < len(predictions):
+        return bool(predictions[latest_idx]), float(combined[latest_idx])
     return bool(predictions[-1]), float(combined[-1])
 
 
