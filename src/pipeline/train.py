@@ -107,11 +107,9 @@ def run_pipeline(config_path: str):
 
         print("Computing autoencoder scores...")
         scores_ae_train = compute_anomaly_scores(model, X_train, seq_length)
-        scores_ae_val = compute_anomaly_scores(model, X_val, seq_length)
         scores_ae_test = compute_anomaly_scores(model, X_test, seq_length)
 
         scores_if_train = if_model.predict(X_train)
-        scores_if_val = if_model.predict(X_val)
         scores_if_test = if_model.predict(X_test)
 
         print("Fitting ensemble threshold...")
